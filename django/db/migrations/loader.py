@@ -1,6 +1,7 @@
 import pkgutil
 import sys
 from importlib import import_module, reload
+from time import time, sleep
 
 from django.apps import apps
 from django.conf import settings
@@ -72,11 +73,19 @@ class MigrationLoader:
 
     def load_disk(self):
         """Load the migrations from all INSTALLED_APPS from disk."""
+        print("Loading migrations from disk...")
+        start_time = time()
+
         self.disk_migrations = {}
         self.unmigrated_apps = set()
         self.migrated_apps = set()
-        for app_config in apps.get_app_configs():
-            # Get the migrations module directory
+
+        apps_count = len(apps.get_app_configs())
+        for i, app_config in enumerate(apps.get_app_configs(), 1):
+            # Progress print
+            print(f"Processing app {i}/{apps_count}: {app_config.label}")
+            sys.stdout.flush()
+
             module_name, explicit = self.migrations_module(app_config.label)
             if module_name is None:
                 self.unmigrated_apps.add(app_config.label)
@@ -92,19 +101,14 @@ class MigrationLoader:
                     continue
                 raise
             else:
-                # Module is not a package (e.g. migrations.py).
                 if not hasattr(module, "__path__"):
                     self.unmigrated_apps.add(app_config.label)
                     continue
-                # Empty directories are namespaces. Namespace packages have no
-                # __file__ and don't use a list for __path__. See
-                # https://docs.python.org/3/reference/import.html#namespace-packages
                 if getattr(module, "__file__", None) is None and not isinstance(
                     module.__path__, list
                 ):
                     self.unmigrated_apps.add(app_config.label)
                     continue
-                # Force a reload if it's already loaded (tests need this)
                 if was_loaded:
                     reload(module)
             self.migrated_apps.add(app_config.label)
@@ -113,7 +117,6 @@ class MigrationLoader:
                 for _, name, is_pkg in pkgutil.iter_modules(module.__path__)
                 if not is_pkg and name[0] not in "_~"
             }
-            # Load migrations
             for migration_name in migration_names:
                 migration_path = "%s.%s" % (module_name, migration_name)
                 try:
@@ -138,6 +141,8 @@ class MigrationLoader:
                     )
                 )
 
+        print(f"Loading completed in {time() - start_time:.2f} seconds.")
+
     def get_migration(self, app_label, name_prefix):
         """Return the named migration or raise NodeNotFoundError."""
         return self.graph.nodes[app_label, name_prefix]
@@ -146,12 +151,9 @@ class MigrationLoader:
         """
         Return the migration(s) which match the given app label and name_prefix.
         """
-        # Do the search
         results = []
         for migration_app_label, migration_name in self.disk_migrations:
-            if migration_app_label == app_label and migration_name.startswith(
-                name_prefix
-            ):
+            if migration_app_label == app_label and migration_name.startswith(name_prefix):
                 results.append((migration_app_label, migration_name))
         if len(results) > 1:
             raise AmbiguityError(
@@ -160,8 +162,7 @@ class MigrationLoader:
             )
         elif not results:
             raise KeyError(
-                f"There is no migration for '{app_label}' with the prefix "
-                f"'{name_prefix}'"
+                f"There is no migration for '{app_label}' with the prefix '{name_prefix}'"
             )
         else:
             return self.disk_migrations[results[0]]
@@ -169,17 +170,9 @@ class MigrationLoader:
     def check_key(self, key, current_app):
         if (key[1] != "__first__" and key[1] != "__latest__") or key in self.graph:
             return key
-        # Special-case __first__, which means "the first migration" for
-        # migrated apps, and is ignored for unmigrated apps. It allows
-        # makemigrations to declare dependencies on apps before they even have
-        # migrations.
         if key[0] == current_app:
-            # Ignore __first__ references to the same app (#22325)
             return
         if key[0] in self.unmigrated_apps:
-            # This app isn't migrated, but something depends on it.
-            # The models will get auto-added into the state, though
-            # so we're fine.
             return
         if key[0] in self.migrated_apps:
             try:
@@ -202,13 +195,11 @@ class MigrationLoader:
         dependencies find the correct root node.
         """
         for parent in migration.dependencies:
-            # Ignore __first__ references to the same app.
             if parent[0] == key[0] and parent[1] != "__first__":
                 self.graph.add_dependency(migration, key, parent, skip_validation=True)
 
     def add_external_dependencies(self, key, migration):
         for parent in migration.dependencies:
-            # Skip internal dependencies
             if key[0] == parent[0]:
                 continue
             parent = self.check_key(parent, key[0])
@@ -222,69 +213,56 @@ class MigrationLoader:
     def build_graph(self):
         """
         Build a migration dependency graph using both the disk and database.
-        You'll need to rebuild the graph if you apply migrations. This isn't
-        usually a problem as generally migration stuff runs in a one-shot process.
         """
-        # Load disk data
+        print("Building migration graph...")
+        start_time = time()
+
         self.load_disk()
-        # Load database data
         if self.connection is None:
             self.applied_migrations = {}
         else:
             recorder = MigrationRecorder(self.connection)
             self.applied_migrations = recorder.applied_migrations()
-        # To start, populate the migration graph with nodes for ALL migrations
-        # and their dependencies. Also make note of replacing migrations at this step.
         self.graph = MigrationGraph()
         self.replacements = {}
+
+        print("Adding nodes...")
         for key, migration in self.disk_migrations.items():
             self.graph.add_node(key, migration)
-            # Replacing migrations.
             if migration.replaces:
                 self.replacements[key] = migration
+
+        print("Adding internal dependencies...")
         for key, migration in self.disk_migrations.items():
-            # Internal (same app) dependencies.
             self.add_internal_dependencies(key, migration)
-        # Add external dependencies now that the internal ones have been resolved.
+
+        print("Adding external dependencies...")
         for key, migration in self.disk_migrations.items():
             self.add_external_dependencies(key, migration)
-        # Carry out replacements where possible and if enabled.
+
         if self.replace_migrations:
+            print("Handling migration replacements...")
             for key, migration in self.replacements.items():
-                # Get applied status of each of this migration's replacement
-                # targets.
                 applied_statuses = [
                     (target in self.applied_migrations) for target in migration.replaces
                 ]
-                # The replacing migration is only marked as applied if all of
-                # its replacement targets are.
                 if all(applied_statuses):
                     self.applied_migrations[key] = migration
                 else:
                     self.applied_migrations.pop(key, None)
-                # A replacing migration can be used if either all or none of
-                # its replacement targets have been applied.
                 if all(applied_statuses) or (not any(applied_statuses)):
                     self.graph.remove_replaced_nodes(key, migration.replaces)
                 else:
-                    # This replacing migration cannot be used because it is
-                    # partially applied. Remove it from the graph and remap
-                    # dependencies to it (#25945).
                     self.graph.remove_replacement_node(key, migration.replaces)
-        # Ensure the graph is consistent.
+
+        print("Validating graph consistency...")
         try:
             self.graph.validate_consistency()
         except NodeNotFoundError as exc:
-            # Check if the missing node could have been replaced by any squash
-            # migration but wasn't because the squash migration was partially
-            # applied before. In that case raise a more understandable exception
-            # (#23556).
-            # Get reverse replacements.
             reverse_replacements = {}
             for key, migration in self.replacements.items():
                 for replaced in migration.replaces:
                     reverse_replacements.setdefault(replaced, set()).add(key)
-            # Try to reraise exception with more detail.
             if exc.node in reverse_replacements:
                 candidates = reverse_replacements.get(exc.node, set())
                 is_replaced = any(
@@ -304,21 +282,23 @@ class MigrationLoader:
             raise
         self.graph.ensure_not_cyclic()
 
+        print(f"Graph build completed in {time() - start_time:.2f} seconds.")
+
     def check_consistent_history(self, connection):
         """
         Raise InconsistentMigrationHistory if any applied migrations have
         unapplied dependencies.
         """
+        print("Checking migration history consistency...")
+        start_time = time()
+
         recorder = MigrationRecorder(connection)
         applied = recorder.applied_migrations()
         for migration in applied:
-            # If the migration is unknown, skip it.
             if migration not in self.graph.nodes:
                 continue
             for parent in self.graph.node_map[migration].parents:
                 if parent not in applied:
-                    # Skip unapplied squashed migrations that have all of their
-                    # `replaces` applied.
                     if parent in self.replacements:
                         if all(
                             m in applied for m in self.replacements[parent].replaces
@@ -335,18 +315,25 @@ class MigrationLoader:
                         )
                     )
 
+        print(f"Consistency check completed in {time() - start_time:.2f} seconds.")
+
     def detect_conflicts(self):
         """
         Look through the loaded graph and detect any conflicts - apps
         with more than one leaf migration. Return a dict of the app labels
         that conflict with the migration names that conflict.
         """
+        print("Detecting conflicts...")
+        start_time = time()
+
         seen_apps = {}
         conflicting_apps = set()
         for app_label, migration_name in self.graph.leaf_nodes():
             if app_label in seen_apps:
                 conflicting_apps.add(app_label)
             seen_apps.setdefault(app_label, set()).add(migration_name)
+
+        print(f"Conflict detection completed in {time() - start_time:.2f} seconds.")
         return {
             app_label: sorted(seen_apps[app_label]) for app_label in conflicting_apps
         }
