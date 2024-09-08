@@ -1,62 +1,63 @@
-import os
-import sys
-from distutils.sysconfig import get_python_lib
-import site
-from setuptools import setup
+from setuptools import setup, find_packages
 
-def print_progress(message):
-    """Prints a progress message to the standard output."""
-    sys.stdout.write(f"{message}\n")
-    sys.stdout.flush()
-
-# Determine if we should allow editable install into the user site directory.
-print_progress("Checking for user site directory installation option...")
-site.ENABLE_USER_SITE = "--user" in sys.argv
-
-# Flag to indicate if we should display a warning about potential overlay issues
-overlay_warning = False
-
-if "install" in sys.argv:
-    print_progress("Installation detected. Checking for existing Django installations...")
-
-    # List of possible library paths to check for existing installations
-    lib_paths = [get_python_lib()]
-
-    # Add /usr/local to the list of paths to handle custom Debian installations
-    if lib_paths[0].startswith("/usr/lib/"):
-        lib_paths.append(get_python_lib(prefix="/usr/local"))
-
-    # Check each library path for existing Django installations
-    for lib_path in lib_paths:
-        existing_path = os.path.abspath(os.path.join(lib_path, "django"))
-        if os.path.exists(existing_path):
-            # Flag to display warning if Django is already installed
-            overlay_warning = True
-            print_progress(f"Existing Django installation found at: {existing_path}")
-            break
-
-# Set up the package using setuptools
-print_progress("Setting up the package with setuptools...")
-setup()
-
-# Display a warning if an existing Django installation was detected
-if overlay_warning:
-    sys.stderr.write(
-        """
-========
-WARNING!
-========
-
-You have just installed Django over an existing installation without removing it first.
-This may result in your install containing outdated or extraneous files from a previous version, which can lead to various issues.
-
-To resolve this, manually remove the following directory and then reinstall Django:
-
-%(existing_path)s
-
-"""
-        % {"existing_path": existing_path}
-    )
-    print_progress("Warning issued. Please follow the instructions above to avoid potential issues.")
-else:
-    print_progress("Installation completed successfully.")
+setup(
+    name='Django',
+    version='4.0.0',  # Set this to your package version
+    url='https://www.djangoproject.com/',
+    author='Django Software Foundation',
+    author_email='foundation@djangoproject.com',
+    description='A high-level Python web framework that encourages rapid development and clean, pragmatic design.',
+    long_description=open('README.rst').read(),
+    license='BSD-3-Clause',
+    classifiers=[
+        'Development Status :: 5 - Production/Stable',
+        'Environment :: Web Environment',
+        'Framework :: Django',
+        'Intended Audience :: Developers',
+        'License :: OSI Approved :: BSD License',
+        'Operating System :: OS Independent',
+        'Programming Language :: Python',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3 :: Only',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
+        'Topic :: Internet :: WWW/HTTP',
+        'Topic :: Internet :: WWW/HTTP :: Dynamic Content',
+        'Topic :: Internet :: WWW/HTTP :: WSGI',
+        'Topic :: Software Development :: Libraries :: Application Frameworks',
+        'Topic :: Software Development :: Libraries :: Python Modules',
+    ],
+    project_urls={
+        'Documentation': 'https://docs.djangoproject.com/',
+        'Release notes': 'https://docs.djangoproject.com/en/stable/releases/',
+        'Funding': 'https://www.djangoproject.com/fundraising/',
+        'Source': 'https://github.com/django/django',
+        'Tracker': 'https://code.djangoproject.com/',
+    },
+    python_requires='>=3.10',
+    packages=find_packages(),
+    include_package_data=True,
+    zip_safe=False,
+    install_requires=[
+        'asgiref >= 3.7.0',
+        'sqlparse >= 0.3.1',
+        'tzdata; sys_platform == "win32"',
+    ],
+    extras_require={
+        'argon2': ['argon2-cffi >= 19.1.0'],
+        'bcrypt': ['bcrypt'],
+    },
+    entry_points={
+        'console_scripts': [
+            'django-admin = django.core.management:execute_from_command_line',
+        ],
+    },
+    # Ensure users get the latest version
+    setup_requires=[
+        'setuptools>=42',  # or another version of setuptools
+    ],
+    dependency_links=[
+        'https://pypi.org/project/Django/#history',  # Link to the Django release history
+    ],
+)
